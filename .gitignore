@@ -1,0 +1,14 @@
+.env
+*.csv
+*.png
+.venv/ 
+__pycache__/
+*.pyc
+*.pkl
+*.db
+*.sqlite3
+*.log
+*.egg-info
+*.egg
+*.zip
+*.tar.gz

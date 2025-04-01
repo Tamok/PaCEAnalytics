@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""
+This script generates a verbose PDF report titled "Zoho Campaign Performance" focused on email marketing KPIs.
+It includes:
+  - A custom summary table of key KPIs (total sent, delivered, open rate, click rate, bounce rate, unsubscribe rate).
+  - A correlation heatmap and distribution histograms for these rates.
+  - Two-step AI-generated "Comments" for each chart. The AI is prompted with raw data (plus the chart type)
+    and then asked (with web search enabled) to corroborate the insights against industry benchmarks for YEAR.
+  - A definitions slide that explains key terms (e.g. "Frequency").
+  - Consistent slide numbering and branding (using UCSB Blue, UCSB Gold, and PaCE Links), and the logo is placed on each slide.
+  
+Important: The YEAR variable is set at the top (default 2025) so that all web searches compare our numbers against 2025 standards.
+"""
+
+import os
+import argparse
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.backends.backend_pdf import PdfPages
+from dotenv import load_dotenv
+import dataframe_image as dfi
+
+# Remove LaTeX entirely (plain text only)
+# plt.rc('text', usetex=True)
+
+# Import the new OpenAI client (if available)
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
+    print("Please install the new OpenAI library that supports gpt-4o with `pip install openai`")
+
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Branding & configuration
+UCSB_BLUE = "#003660"
+UCSB_GOLD = "#febc11"
+PACE_LINKS = "#1178b5"
+YEAR = 2025  # Year to be used in AI prompts for benchmarking
+
+sns.set_style("whitegrid")
+sns.set_palette([UCSB_BLUE, UCSB_GOLD, PACE_LINKS])
+
+# Global slide counter
+SLIDE_NUMBER = 1
+
+# ----------------------------
+# Helper Functions
+# ----------------------------
+def verbose_print(message):
+    print("[INFO] " + message)
+
+def process_markdown(text):
+    """
+    Since we are not using LaTeX, simply return the plain text.
+    (If needed, you can add simple markdown-to-plain-text conversions here.)
+    """
+    return text
+
+def add_slide_number(fig):
+    """Adds the current slide number to the figure and increments the global counter."""
+    global SLIDE_NUMBER
+    fig.text(0.95, 0.02, f"Slide {SLIDE_NUMBER}", ha="right", va="bottom", fontsize=10, color=UCSB_BLUE)
+    SLIDE_NUMBER += 1
+
+def init_openai_client():
+    """Initializes and returns the OpenAI client if configured; otherwise returns None."""
+    if OpenAI is None or OPENAI_API_KEY is None:
+        verbose_print("OpenAI client not configured. Comments will be skipped.")
+        return None
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    return client
+
+def generate_comments_with_corroboration(client, data_description, chart_type):
+    """
+    Generates "Comments" in two steps:
+      1. Initial AI call using the provided data context and chart type.
+      2. A follow-up call (with web search enabled) to corroborate these comments with industry benchmarks for YEAR.
+    The prompts instruct the AI to avoid trivial statements.
+    """
+    if not client:
+        return "AI client not available. No comments generated."
+    
+    initial_prompt = f"""
+You are a marketing analytics expert specializing in email marketing. Analyze the following data context and chart type.
+Data Context: {data_description}
+Chart Type: {chart_type}
+Using data for the year {YEAR}, provide exactly 3 bullet points that capture key trends and insights (avoid stating the obvious) 
+and 1 bullet point with a recommended action, comparing our performance to industry benchmarks. 
+Respond in plain text.
+    """.strip()
+    try:
+        initial_response = client.responses.create(
+            model="gpt-4o",
+            input=initial_prompt
+        )
+        initial_comments = initial_response.output_text.strip()
+    except Exception as e:
+        initial_comments = f"Error in initial AI call: {e}"
+    
+    corroboration_prompt = f"""
+You are a marketing analytics expert. The initial comments on the analysis are:
+{initial_comments}
+
+Now, using web search, please corroborate these comments by comparing our numbers for {YEAR} to industry standards,
+and clearly state if our performance is above standard (include at least one source citation with a URL).
+Do not remove any of the initial comments; simply append your corroboration.
+Respond in plain text.
+    """.strip()
+    try:
+        corroboration_response = client.responses.create(
+            model="gpt-4o",
+            tools=[{"type": "web_search_preview"}],
+            input=corroboration_prompt
+        )
+        corroboration_text = corroboration_response.output_text.strip()
+    except Exception as e:
+        corroboration_text = f"Error in corroboration AI call: {e}"
+    
+    final_comments = initial_comments + "\n\n" + corroboration_text
+    return final_comments
+
+def place_logo_on_figure(fig, logo_path="logo.png"):
+    """
+    Attempts to place a small logo in the top-right corner of the figure.
+    Adjusted coordinates to improve visibility.
+    """
+    try:
+        logo_img = plt.imread(logo_path)
+        new_ax = fig.add_axes([0.85, 0.85, 0.1, 0.1], anchor='NE', zorder=1)
+        new_ax.imshow(logo_img)
+        new_ax.axis('off')
+    except FileNotFoundError:
+        verbose_print(f"Logo file not found: {logo_path}")
+
+# ----------------------------
+# Analysis Functions
+# ----------------------------
+def create_summary_table(df):
+    """
+    Computes a custom summary table with key email marketing KPIs:
+      - Total Sent, Delivered, Open Rate (Opened/Delivered * 100), Click Rate (Clicked/Delivered * 100),
+        Bounce Rate (Bounced/Sent * 100), Unsubscribe Rate (Unsubscribes/Sent * 100).
+    Returns the summary table as a DataFrame.
+    """
+    total_sent = df["Sent"].sum() if "Sent" in df.columns else 0
+    total_delivered = df["Delivered"].sum() if "Delivered" in df.columns else 0
+    total_opened = df["Opened"].sum() if "Opened" in df.columns else 0
+    total_clicked = df["Clicked"].sum() if "Clicked" in df.columns else 0
+    total_bounced = df["Bounced"].sum() if "Bounced" in df.columns else 0
+    total_unsubscribes = df["Unsubscribes"].sum() if "Unsubscribes" in df.columns else 0
+
+    delivery_rate = (total_delivered / total_sent * 100) if total_sent > 0 else 0
+    open_rate = (total_opened / total_delivered * 100) if total_delivered > 0 else 0
+    click_rate = (total_clicked / total_delivered * 100) if total_delivered > 0 else 0
+    bounce_rate = (total_bounced / total_sent * 100) if total_sent > 0 else 0
+    unsubscribe_rate = (total_unsubscribes / total_sent * 100) if total_sent > 0 else 0
+
+    data = {
+        "Metric": ["Sent", "Delivered", "Delivery Rate", "Opened", "Open Rate", "Clicked", "Click Rate", "Bounced", "Bounce Rate", "Unsubscribes", "Unsubscribe Rate"],
+        "Value": [total_sent,
+                  total_delivered,
+                  f"{delivery_rate:.2f}%",
+                  total_opened,
+                  f"{open_rate:.2f}%",
+                  total_clicked,
+                  f"{click_rate:.2f}%",
+                  total_bounced,
+                  f"{bounce_rate:.2f}%",
+                  total_unsubscribes,
+                  f"{unsubscribe_rate:.2f}%"]
+    }
+    summary_df = pd.DataFrame(data)
+    return summary_df
+
+def create_summary_table_slide(summary_df, pdf):
+    """
+    Exports the summary table as a high-resolution image (centered) and inserts it into the PDF.
+    """
+    table_png = "summary_table.png"
+    styled = (
+        summary_df.style
+        .set_caption("Overall Email Marketing KPIs")
+        .set_table_styles([
+            {
+                'selector': 'caption',
+                'props': [('color', UCSB_BLUE),
+                          ('font-size', '18px'),
+                          ('text-align', 'center'),
+                          ('font-weight', 'bold')]
+            },
+            {
+                'selector': 'th',
+                'props': [('text-align', 'center'), ('background-color', PACE_LINKS), ('color', 'white')]
+            }
+        ])
+        .set_properties(**{'text-align': 'center', 'font-size': '12pt'})
+        .background_gradient(cmap="Blues")
+    )
+    dfi.export(styled, table_png, dpi=200)  # export at higher DPI for clarity
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    ax.axis('off')
+    # Center the table image
+    img = plt.imread(table_png)
+    ax.imshow(img, aspect='auto')
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+def compute_rate_columns(df):
+    """
+    Computes per-campaign rate columns:
+      - Delivery Rate, Open Rate, Click Rate, Bounce Rate, Unsubscribe Rate.
+    Returns a new DataFrame with these additional columns.
+    """
+    df = df.copy()
+    df["Delivery Rate"] = np.where(df["Sent"] > 0, df["Delivered"] / df["Sent"] * 100, 0)
+    df["Open Rate"] = np.where(df["Delivered"] > 0, df["Opened"] / df["Delivered"] * 100, 0)
+    df["Click Rate"] = np.where(df["Delivered"] > 0, df["Clicked"] / df["Delivered"] * 100, 0)
+    df["Bounce Rate"] = np.where(df["Sent"] > 0, df["Bounced"] / df["Sent"] * 100, 0)
+    df["Unsubscribe Rate"] = np.where(df["Sent"] > 0, df["Unsubscribes"] / df["Sent"] * 100, 0)
+    return df
+
+# ----------------------------
+# Visualization Functions
+# ----------------------------
+def create_correlation_heatmap(df_rates, pdf, client):
+    """
+    Creates a correlation heatmap of the 5 key rate metrics and a text slide with AI-generated comments.
+    """
+    rate_cols = ["Delivery Rate", "Open Rate", "Click Rate", "Bounce Rate", "Unsubscribe Rate"]
+    corr = df_rates[rate_cols].corr()
+
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
+    ax.set_title("Correlation Heatmap for Key Email Marketing Rates", fontsize=16, color=UCSB_BLUE)
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+    raw_data_text = corr.to_string()
+    explanation = ("This heatmap displays the correlation between key email marketing rate metrics. "
+                   "It shows how one metric may relate to another.")
+    comments = generate_comments_with_corroboration(client, f"Correlation Data:\n{raw_data_text}", "Heatmap of key email marketing rates")
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    ax.axis('off')
+    text_output = f"Why this chart matters:\n{explanation}\n\nComments:\n{comments}"
+    ax.text(0.01, 0.95, text_output, ha='left', va='top', wrap=True, fontsize=11)
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+def create_distribution_histogram(df_rates, metric, pdf, client):
+    """
+    Creates a histogram for the given rate metric and a text slide with AI-generated comments.
+    """
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    sns.histplot(df_rates[metric].dropna(), kde=True, color=PACE_LINKS, ax=ax)
+    ax.set_title(f"Distribution of {metric}", fontsize=16, color=UCSB_BLUE)
+    ax.set_xlabel(metric)
+    ax.set_ylabel("Frequency\n(Count of records in each bin)")
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+    summary_text = df_rates[metric].describe().to_string()
+    explanation = f"This histogram shows the distribution of {metric} (in %). Frequency represents the count of records in each bin."
+    comments = generate_comments_with_corroboration(client, f"Distribution Summary for {metric}:\n{summary_text}", f"Histogram for {metric}")
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    ax.axis('off')
+    text_output = f"Why this chart matters:\n{explanation}\n\nComments:\n{comments}"
+    ax.text(0.01, 0.95, text_output, ha='left', va='top', wrap=True, fontsize=11)
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+def create_definitions_slide(pdf):
+    """
+    Creates a slide that defines key terms such as 'Frequency'.
+    """
+    definitions = (
+        "Definitions:\n\n"
+        "Frequency: The count of records in each bin of a histogram, representing how often a particular range of values occurs.\n\n"
+        "Delivery Rate: (Delivered/Sent) * 100\n"
+        "Open Rate: (Opened/Delivered) * 100\n"
+        "Click Rate: (Clicked/Delivered) * 100\n"
+        "Bounce Rate: (Bounced/Sent) * 100\n"
+        "Unsubscribe Rate: (Unsubscribes/Sent) * 100\n"
+    )
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    ax.axis('off')
+    ax.text(0.05, 0.9, definitions, ha='left', va='top', fontsize=12, color=UCSB_BLUE)
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+def create_overall_conclusion(summary_df, pdf, client):
+    """
+    Generates a final overall conclusion slide based on the summary table.
+    """
+    raw_summary = summary_df.to_string(index=False)
+    prompt = f"""
+We have the following summary of our email marketing KPIs:
+{raw_summary}
+
+As a marketing analytics expert, provide 3 high-level bullet points summarizing our overall performance trends,
+comparing our numbers to industry benchmarks for {YEAR}, and highlighting our positive results.
+Avoid trivial observations.
+Respond in plain text.
+    """.strip()
+    if client:
+        try:
+            initial_response = client.responses.create(
+                model="gpt-4o",
+                input=prompt
+            )
+            initial_conclusion = initial_response.output_text.strip()
+        except Exception as e:
+            initial_conclusion = f"Error in initial AI call: {e}"
+        
+        corroboration_prompt = f"""
+You are a marketing analytics expert. The initial overall conclusion is:
+{initial_conclusion}
+
+Now, using web search, corroborate these conclusions by referencing industry standards for {YEAR},
+and clearly state if our performance is above the standards (include at least one citation with a URL).
+Append your findings without removing any original content.
+Respond in plain text.
+    """.strip()
+        try:
+            corroboration_response = client.responses.create(
+                model="gpt-4o",
+                tools=[{"type": "web_search_preview"}],
+                input=corroboration_prompt
+            )
+            corroboration_text = corroboration_response.output_text.strip()
+        except Exception as e:
+            corroboration_text = f"Error in corroboration AI call: {e}"
+        final_conclusion = initial_conclusion + "\n\n" + corroboration_text
+    else:
+        final_conclusion = "AI client not available. No overall conclusion generated."
+
+    fig, ax = plt.subplots(figsize=(10,8))
+    place_logo_on_figure(fig)
+    ax.axis('off')
+    ax.set_title("Overall Conclusions", fontsize=16, color=UCSB_BLUE, pad=20)
+    ax.text(0.01, 0.95, final_conclusion, ha='left', va='top', wrap=True, fontsize=11)
+    add_slide_number(fig)
+    pdf.savefig(fig, bbox_inches='tight')
+    plt.close(fig)
+
+# ----------------------------
+# Main Function
+# ----------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate a verbose Zoho Campaign Performance PDF report focused on email marketing KPIs with AI comments."
+    )
+    parser.add_argument('--file', type=str, default="CampaignReports2025.csv",
+                        help="Path to the CSV file (default: CampaignReports2025.csv)")
+    parser.add_argument('--output', type=str, default="zoho_campaign_performance.pdf",
+                        help="Output PDF file name (default: zoho_campaign_performance.pdf)")
+    args = parser.parse_args()
+
+    verbose_print("Initializing OpenAI client...")
+    client = init_openai_client()
+
+    verbose_print(f"Reading CSV file: {args.file}")
+    try:
+        df = pd.read_csv(args.file)
+        verbose_print("CSV file loaded successfully.")
+    except Exception as e:
+        verbose_print(f"Error reading file {args.file}: {e}")
+        return
+
+    # Drop negligible columns if they exist
+    cols_to_drop = ["Forwards", "Marked as spam"]
+    dropped = []
+    for col in cols_to_drop:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+            dropped.append(col)
+    if dropped:
+        note = f"Note: The following metrics were dropped due to negligible impact: {', '.join(dropped)}."
+    else:
+        note = "Note: No negligible metrics were dropped."
+    verbose_print(note)
+
+    with PdfPages(args.output) as pdf:
+        # Title Slide
+        verbose_print("Generating title slide...")
+        fig, ax = plt.subplots(figsize=(10,8))
+        place_logo_on_figure(fig)
+        ax.axis('off')
+        ax.text(0.5, 0.6, "Zoho Campaign Performance", fontsize=30, ha='center', va='center', color=UCSB_BLUE)
+        ax.text(0.5, 0.45, "A Data-Driven Look at Email Marketing Results", fontsize=16, ha='center', va='center', color=PACE_LINKS)
+        add_slide_number(fig)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+        # Definitions Slide
+        verbose_print("Generating definitions slide...")
+        create_definitions_slide(pdf)
+
+        # Dropped Metrics Note Slide
+        verbose_print("Adding dropped metrics note slide...")
+        fig, ax = plt.subplots(figsize=(10,8))
+        place_logo_on_figure(fig)
+        ax.axis('off')
+        ax.text(0.05, 0.9, note, ha='left', va='top', fontsize=14, color=UCSB_BLUE)
+        add_slide_number(fig)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+        # Summary Table Slide (Overall KPIs)
+        verbose_print("Generating summary table slide...")
+        summary_df = create_summary_table(df)
+        create_summary_table_slide(summary_df, pdf)
+
+        # Compute rate columns for further analysis
+        df_rates = compute_rate_columns(df)
+
+        # Correlation Heatmap Slide
+        verbose_print("Generating correlation heatmap slide...")
+        create_correlation_heatmap(df_rates, pdf, client)
+
+        # Distribution Histograms for key rate metrics
+        for metric in ["Delivery Rate", "Open Rate", "Click Rate", "Bounce Rate", "Unsubscribe Rate"]:
+            verbose_print(f"Generating distribution histogram for {metric}...")
+            create_distribution_histogram(df_rates, metric, pdf, client)
+
+        # Final Overall Conclusion Slide
+        verbose_print("Generating final overall conclusion slide...")
+        create_overall_conclusion(summary_df, pdf, client)
+
+    verbose_print(f"PDF report successfully created: {args.output}")
+
+if __name__ == "__main__":
+    main()
