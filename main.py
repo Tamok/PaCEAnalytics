@@ -6,17 +6,15 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from dotenv import load_dotenv
 
-# Import modules from our project
+# Import project modules
 import utils
 import analysis
 import visualization
 import openai
 
-# Load environment variables
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Import the OpenAI module (if installed)
 try:
     import openai
 except ImportError:
@@ -24,7 +22,7 @@ except ImportError:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate a modular Zoho Campaign Performance PDF report focused on email marketing KPIs with AI comments."
+        description="Generate a modular Zoho Campaign Performance PDF report with AI comments."
     )
     parser.add_argument('--file', type=str, default="CampaignReports2025.csv",
                         help="Path to the CSV file (default: CampaignReports2025.csv)")
@@ -50,10 +48,8 @@ def main():
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
             dropped.append(col)
-    if dropped:
-        note = f"Note: The following metrics were dropped due to negligible impact: {', '.join(dropped)}."
-    else:
-        note = "Note: No negligible metrics were dropped."
+    note = (f"Note: Dropped metrics: {', '.join(dropped)}." 
+            if dropped else "Note: No negligible metrics were dropped.")
     utils.verbose_print(note)
 
     with PdfPages(args.output) as pdf:
@@ -62,22 +58,23 @@ def main():
         fig, ax = plt.subplots(figsize=(11, 8.5))
         utils.place_logo_on_figure(fig)
         ax.axis('off')
-        ax.text(0.5, 0.6, "Zoho Campaign Performance", fontsize=30, ha='center', va='center', color=utils.UCSB_BLUE)
-        ax.text(0.5, 0.45, "A Data-Driven Look at Email Marketing Results", fontsize=16, ha='center', va='center', color=utils.PACE_LINKS)
+        ax.set_title("Zoho Campaign Performance", fontsize=30, color=utils.UCSB_BLUE, pad=20)
+        ax.text(0.5, 0.55, "A Data-Driven Look at Email Marketing Results", fontsize=18, ha='center', color=utils.PACE_LINKS)
         utils.add_slide_number(fig)
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
 
         # Definitions Slide
         utils.verbose_print("Generating definitions slide...")
-        visualization.create_definitions_slide(pdf)
+        visualization.create_definitions_additional_slide(pdf, note)
 
         # Dropped Metrics Note Slide
         utils.verbose_print("Adding dropped metrics note slide...")
         fig, ax = plt.subplots(figsize=(11, 8.5))
         utils.place_logo_on_figure(fig)
         ax.axis('off')
-        ax.text(0.05, 0.9, note, ha='left', va='top', fontsize=14, color=utils.UCSB_BLUE)
+        ax.set_title("Additional Information", fontsize=22, color=utils.UCSB_BLUE, pad=20)
+        ax.text(0.05, 0.85, note, ha='left', va='top', fontsize=16, color=utils.UCSB_BLUE)
         utils.add_slide_number(fig)
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
@@ -94,7 +91,7 @@ def main():
         utils.verbose_print("Generating correlation heatmap slide...")
         visualization.create_correlation_heatmap(df_rates, pdf, client)
 
-        # Distribution Histograms for key rate metrics
+        # Distribution Histograms for key metrics
         for metric in ["Delivery Rate", "Open Rate", "Click Rate", "Bounce Rate", "Unsubscribe Rate"]:
             utils.verbose_print(f"Generating distribution histogram for {metric}...")
             visualization.create_distribution_histogram(df_rates, metric, pdf, client)

@@ -1,83 +1,81 @@
 # openai_integration.py
 import os
+import json
+import hashlib
 from utils import verbose_print
 
-# Read benchmarking year and engine model from environment
-YEAR = os.getenv("YEAR", "2025")
-ENGINE_MODEL = os.getenv("ENGINE_MODEL", "gpt-4o")
+CACHE_FILE = "ai_cache.json"
+
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_cache(cache):
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f)
+
+def get_cache_key(data_description, chart_type):
+    key = data_description + chart_type
+    return hashlib.md5(key.encode("utf-8")).hexdigest()
 
 def generate_full_explanation(client, data_description, chart_type):
     """
-    Generates a three-part explanation:
-      1. "Why this chart matters" – a brief explanation.
-      2. "Industry Standards" – obtains benchmarks for the year from web search.
-      3. "AI Insights" – uses the industry standards as context to provide positively biased insights.
-    Returns the combined explanation text.
+    Generates an explanation with the following structure:
+      - Overview: one short paragraph explaining what the chart shows.
+      - AI Insights: three bullet points.
+      - Recommendations: two bullet points.
+      - Industry Standards: web-sourced 2025 statistics with embedded links.
+    
+    This function first checks if a cached result exists for the given data_description and chart_type.
+    If so, it returns the cached response; otherwise, it calls the AI, caches the result, and returns it.
     """
-    if not client:
-        return "AI client not available. No explanation generated."
+    cache = load_cache()
+    key = get_cache_key(data_description, chart_type)
+    if key in cache:
+        verbose_print("Using cached AI explanation.")
+        return cache[key]
     
-    # Part 1: Why this chart matters
-    why_prompt = f"""
-You are a marketing analytics expert in email marketing.
-Based on the following data context and chart type:
+    prompt = f"""
+You are a marketing analytics expert. Analyze the following data context and chart type.
 Data Context: {data_description}
 Chart Type: {chart_type}
-Explain briefly why this chart is important for understanding email marketing performance.
+Generate an explanation that includes:
+1. An overview in one short paragraph explaining what the chart shows.
+2. Three bullet points with AI Insights.
+3. Two bullet points with Recommendations.
+4. Industry Standards: Use web search to source relevant 2025 statistics and embed the source link.
+Format your response exactly as follows:
+
+Overview: <your overview>
+
+AI Insights:
+- <bullet point 1>
+- <bullet point 2>
+- <bullet point 3>
+
+Recommendations:
+- <bullet point 1>
+- <bullet point 2>
+
+Industry Standards:
+<your sourced statistics with citation>
+
 Respond in plain text.
     """.strip()
     try:
-        why_response = client.responses.create(
-            model=ENGINE_MODEL,
-            input=why_prompt
+        response = client.responses.create(
+            model="gpt-4o",
+            input=prompt
         )
-        why_text = why_response.output_text.strip()
+        explanation = response.output_text.strip()
     except Exception as e:
-        why_text = f"Error in 'Why this chart matters': {e}"
+        explanation = f"Error in generating explanation: {e}"
     
-    # Part 2: Industry Standards via web search
-    industry_prompt = f"""
-You are a marketing analytics expert.
-Using web search, provide industry standards and benchmarks for email marketing performance for the year {YEAR} related to the following chart:
-Data Context: {data_description}
-Chart Type: {chart_type}
-Respond in plain text and include at least one source citation with a URL.
-    """.strip()
-    try:
-        industry_response = client.responses.create(
-            model=ENGINE_MODEL,
-            tools=[{"type": "web_search_preview"}],
-            input=industry_prompt
-        )
-        industry_text = industry_response.output_text.strip()
-    except Exception as e:
-        industry_text = f"Error in 'Industry Standards': {e}"
-    
-    # Part 3: AI Insights using industry standards as context
-    insights_prompt = f"""
-You are a marketing analytics expert.
-Given the following industry standards and benchmarks:
-{industry_text}
-And based on the data context:
-{data_description}
-And the chart type:
-{chart_type}
-Provide exactly 3 bullet points summarizing key insights, highlighting how our performance compares positively to industry standards.
-Avoid stating obvious conclusions.
-Respond in plain text.
-    """.strip()
-    try:
-        insights_response = client.responses.create(
-            model=ENGINE_MODEL,
-            input=insights_prompt
-        )
-        insights_text = insights_response.output_text.strip()
-    except Exception as e:
-        insights_text = f"Error in 'AI Insights': {e}"
-    
-    final_output = (
-        f"Why this chart matters:\n{why_text}\n\n"
-        f"Industry Standards:\n{industry_text}\n\n"
-        f"AI Insights:\n{insights_text}"
-    )
-    return final_output
+    cache[key] = explanation
+    save_cache(cache)
+    return explanation
